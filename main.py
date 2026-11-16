@@ -1,10 +1,38 @@
 import os
 import subprocess
 import yt_dlp
+import requests
 
 print("AI Clipper Agent запущен!")
 
-# 1. Скачиваем тестовое видео
+# 1. Проверяем и тестируем Groq API
+groq_key = os.environ.get("GROQ_API_KEY")
+if groq_key:
+    print("Groq API ключ успешно обнаружен!")
+    
+    print("Делаем тестовый запрос к Groq AI (Llama)...")
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": "Привет! Ответь одной короткой фразой: AI Clipper Agent готов к работе?"}]
+    }
+    
+    try:
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        if response.status_code == 200:
+            ai_answer = response.json()["choices"][0]["message"]["content"]
+            print(f"Ответ от ИИ: {ai_answer}")
+        else:
+            print(f"Ошибка ответа Groq API: {response.text}")
+    except Exception as e:
+        print(f"Ошибка при запросе к Groq: {e}")
+else:
+    print("Внимание: Groq API ключ не найден в Secrets!")
+
+# 2. Скачивание тестового видео
 TEST_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
 input_video = "test_video.mp4"
 output_clip = "vertical_clip.mp4"
@@ -23,7 +51,7 @@ try:
 except Exception as e:
     print(f"Ошибка при скачивании: {e}")
 
-# 2. Обрезаем видео в вертикальный формат 9:16 (1080x1920)
+# 3. Обрезаем видео в вертикальный формат 9:16 (1080x1920)
 print("Запускаем конвертацию в формат 9:16 через FFmpeg...")
 try:
     ffmpeg_cmd = [
@@ -44,9 +72,3 @@ try:
 
 except Exception as e:
     print(f"Ошибка при запуске FFmpeg: {e}")
-
-# 3. Проверяем Groq API ключ
-if os.environ.get("GROQ_API_KEY"):
-    print("Groq API ключ на месте — готовы подключать ИИ!")
-else:
-    print("Внимание: Groq API ключ не найден!")
