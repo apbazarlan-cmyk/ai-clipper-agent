@@ -1,125 +1,272 @@
+
 import os
-import subprocess
-import yt_dlp
-import glob
-import requests
 import re
-import traceback
+import glob
+import html
+import subprocess
+import requests
+import yt_dlp
 
-try:
-    print("AI Clipper Agent: Запуск защищенного пайплайна...")
+print("AI Clipper Agent: запуск...")
 
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        print("Ошибка: GROQ_API_KEY не найден в Secrets!")
-        exit(1)
+GROQ_KEY = os.getenv("GROQ_API_KEY")
+TEST_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
 
-    TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-    output_clip = "vertical_clip.mp4"
-    input_video = "test_video.mp4"
+VIDEO_PREFIX = "downloaded_video"
+OUTPUT_CLIP = "vertical_clip.mp4"
 
-    ydl_opts = {
-        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-        'outtmpl': input_video,
-        'merge_output_format': 'mp4',
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['ru', 'en'],
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-    }
 
-    print("Попытка скачивания видео...")
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([TEST_URL])
-    except Exception as e:
-        print(f"YouTube заблокировал облачный IP: {e}")
-        print("Включаем резервный источник для бесперебойного теста...")
-        fallback_url = "https://www.w3schools.com/html/mov_bbb.mp4"
-        r = requests.get(fallback_url, stream=True)
-        with open(input_video, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=1024):
-                if chunk:
-                    f.write(chunk)
-
-    video_files = glob.glob("test_video*")
-    if not video_files:
-        raise Exception("Видеофайл не найден!")
-    input_video = video_files[0]
-    print(f"Используем видеофайл: {input_video}")
-
-    subtitle_files = glob.glob("*.vtt") + glob.glob("*.srt")
-    transcript_text = "Это тестовый стрим по игре, где происходит самый яркий и динамичный момент."
-    if subtitle_files:
+def clean_old_files():
+    for path in glob.glob(VIDEO_PREFIX + ".*"):
         try:
-            with open(subtitle_files[0], "r", encoding="utf-8") as f:
-                transcript_text = f.read()[:10000]
-            print(f"Субтитры успешно прочитаны")
-        except Exception as e:
-            print(f"Не удалось прочитать субтитры: {e}")
+            os.remove(path)
+        except OSError:
+            pass
 
-    start_sec = 1
-    end_sec = 10
 
-    headers = {
-        "Authorization": f"Bearer {groq_key}",
-        "Content-Type": "application/json"
-    }
+def timestamp_to_seconds(value):
+    parts = value.replace(",", ".").split(":")
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+    elif len(parts) == 2:
+        hours = 0
+        minutes, seconds = parts
+    else:
+        raise ValueError("Неверный формат времени")
 
-    prompt = (
-        "Проанализируй текст и найди яркий момент (до 10 секунд). "
-        "Напиши таймкоды строго в формате: START: [секунды], END: [секунды]. "
-        "Пример: START: 1, END: 10\n\nТекст:\n" + transcript_text
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + float(seconds)
     )
 
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": "Ты эксперт по таймкодам. Отвечай строго в формате START: X, END: Y."},
-            {"role": "user", "content": prompt}
-        ]
+
+def read_subtitles():
+    files = glob.glob(VIDEO_PREFIX + "*.vtt")
+    if not files:
+        files = glob.glob(VIDEO_PREFIX + "*.srt")
+
+    if not files:
+        raise RuntimeError("Субтитры не найдены")
+
+    with open(files[0], "r", encoding="utf-8") as f:
+        content = f.read()
+
+    pattern = (
+        r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})"
+        r"\s+-->\s+"
+        r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})"
+        r"[^\n]*\n(.*?)(?=\n\s*\n|\Z)"
+    )
+
+    cues = []
+
+    for match in re.finditer(pattern, content, re.S):
+        start = timestamp_to_seconds(match.group(1))
+        end = timestamp_to_seconds(match.group(2))
+
+        text = match.group(3)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = html.unescape(text)
+        text = " ".join(text.split())
+
+        if text:
+            cues.append(
+                f"[{start:.2f}-{end:.2f}] {text}"
+            )
+
+    if not cues:
+        raise RuntimeError("Не удалось прочитать субтитры")
+
+    return "\n".join(cues)
+
+
+def get_video_duration(path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path
+        ],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+
+    return float(result.stdout.strip())
+
+
+def main():
+    if not GROQ_KEY:
+        raise RuntimeError("GROQ_API_KEY не найден")
+
+    clean_old_files()
+
+    # 1. Скачивание видео
+    print("Скачиваем видео...")
+
+    options = {
+        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "outtmpl": VIDEO_PREFIX + ".%(ext)s",
+        "merge_output_format": "mp4",
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["en", "ru"],
+        "subtitlesformat": "vtt/best",
+        "noplaylist": True,
     }
 
-    print("Запрос к Groq AI...")
-    try:
-        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
-        res_json = response.json()
-        if response.status_code == 200 and "choices" in res_json:
-            ai_answer = res_json["choices"][0]["message"]["content"]
-            print(f"Ответ ИИ:\n{ai_answer}")
-            match_start = re.search(r"START:\s*(\d+)", ai_answer)
-            match_end = re.search(r"END:\s*(\d+)", ai_answer)
-            if match_start and match_end:
-                start_sec = int(match_start.group(1))
-                end_sec = int(match_end.group(1))
-    except Exception as e:
-        print(f"Ошибка Groq API, используем стандартные таймкоды: {e}")
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([TEST_URL])
 
-    duration = end_sec - start_sec
-    if duration <= 0:
-        duration = 5
+    # 2. Находим настоящий скачанный видеофайл
+    excluded = (".vtt", ".srt", ".json", ".part", ".ytdl")
 
-    print(f"Нарезка через FFmpeg: с {start_sec}с, длительность {duration}с...")
-    ffmpeg_cmd = [
+    video_files = [
+        f for f in glob.glob(VIDEO_PREFIX + ".*")
+        if not f.endswith(excluded)
+        and os.path.getsize(f) > 1024
+    ]
+
+    if not video_files:
+        raise RuntimeError("Видео после скачивания не найдено")
+
+    video_files.sort(
+        key=lambda f: f.endswith(".mp4"),
+        reverse=True
+    )
+
+    input_video = video_files[0]
+
+    print("Видео найдено:", input_video)
+
+    duration = get_video_duration(input_video)
+    print(f"Длительность видео: {duration:.2f} сек.")
+
+    # 3. Читаем субтитры с таймкодами
+    print("Читаем субтитры...")
+
+    transcript = read_subtitles()[:12000]
+
+    # 4. Анализируем через Groq
+    print("Отправляем текст в Groq AI...")
+
+    prompt = f"""
+Проанализируй субтитры видео.
+
+Найди один самый интересный момент:
+юмор, неожиданное событие, эмоции или интересный диалог.
+
+Выбери фрагмент продолжительностью от 10 до 30 секунд.
+
+Временные метки в квадратных скобках —
+это реальные временные отметки субтитров.
+
+Не придумывай таймкоды.
+
+Ответь строго:
+START: число
+END: число
+
+Длительность видео: {duration:.2f} секунд.
+
+Субтитры:
+{transcript}
+"""
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Выбирай только реальные таймкоды из предоставленных субтитров."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2
+        },
+        timeout=60
+    )
+
+    response.raise_for_status()
+
+    answer = response.json()["choices"][0]["message"]["content"]
+
+    print("Ответ Groq:")
+    print(answer)
+
+    start_match = re.search(
+        r"START:\s*(\d+(?:\.\d+)?)", answer
+    )
+    end_match = re.search(
+        r"END:\s*(\d+(?:\.\d+)?)", answer
+    )
+
+    if not start_match or not end_match:
+        raise RuntimeError("Groq вернул неверный формат таймкодов")
+
+    start_sec = float(start_match.group(1))
+    end_sec = float(end_match.group(1))
+
+    clip_duration = end_sec - start_sec
+
+    if (
+        start_sec < 0
+        or end_sec > duration
+        or clip_duration < 10
+        or clip_duration > 30
+    ):
+        raise RuntimeError("ИИ выбрал некорректные таймкоды")
+
+    print(f"Выбран момент: {start_sec} - {end_sec}")
+
+    # 5. Создаём вертикальный клип
+    print("Запускаем FFmpeg...")
+
+    command = [
         "ffmpeg", "-y",
         "-ss", str(start_sec),
         "-i", input_video,
-        "-to", str(duration),
-        "-vf", "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
-        "-c:v", "libx264", "-c:a", "aac",
-        output_clip
+        "-t", str(clip_duration),
+        "-vf",
+        "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        OUTPUT_CLIP
     ]
-    
-    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
-    if result.returncode == 0 and os.path.exists(output_clip):
-        size_mb = os.path.getsize(output_clip) / (1024 * 1024)
-        print(f"Успех! Вертикальный клип готов. Размер: {size_mb:.2f} MB")
-    else:
-        print(f"Ошибка FFmpeg:\n{result.stderr}")
-        exit(1)
 
-except Exception as e:
-    print("Критическая ошибка скрипта:")
-    traceback.print_exc()
-    exit(1)
+    subprocess.run(command, check=True)
+
+    # 6. Проверяем результат
+    if not os.path.exists(OUTPUT_CLIP):
+        raise RuntimeError("Готовый клип не найден")
+
+    if os.path.getsize(OUTPUT_CLIP) < 1024:
+        raise RuntimeError("Готовый клип слишком маленький")
+
+    output_duration = get_video_duration(OUTPUT_CLIP)
+    size_mb = os.path.getsize(OUTPUT_CLIP) / (1024 * 1024)
+
+    print("--------------------------------")
+    print("УСПЕХ! КЛИП СОЗДАН")
+    print(f"Файл: {OUTPUT_CLIP}")
+    print(f"Длительность: {output_duration:.2f} сек.")
+    print(f"Размер: {size_mb:.2f} MB")
+    print("--------------------------------")
+
+
+if __name__ == "__main__":
+    main()
