@@ -3,40 +3,20 @@ import subprocess
 import yt_dlp
 import requests
 
-print("AI Clipper Agent запущен!")
+print("AI Clipper Agent запущен и готов к работе!")
 
-# 1. Проверяем и тестируем Groq API
+# 1. Проверяем ключ Groq API
 groq_key = os.environ.get("GROQ_API_KEY")
 if not groq_key:
     print("Ошибка: Groq API ключ не найден в Secrets!")
     exit(1)
 
-print("Groq API ключ обнаружен, тестируем ИИ...")
 headers = {
     "Authorization": f"Bearer {groq_key}",
     "Content-Type": "application/json"
 }
 
-# Тестовый запрос к Llama через Groq
-payload = {
-    "model": "llama-3.3-70b-versatile",
-    "messages": [
-        {"role": "system", "content": "Ты профессиональный видеомонтажер и эксперт по вирусным роликам."},
-        {"role": "user", "content": "Оцени короткое видео с YouTube по шкале от 1 до 10 и предложи одну идею для динамичного клипа. Ответь коротко."}
-    ]
-}
-
-try:
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    if response.status_code == 200:
-        ai_answer = response.json()["choices"][0]["message"]["content"]
-        print(f"Ответ от Groq AI: {ai_answer}")
-    else:
-        print(f"Ошибка ответа Groq API: {response.text}")
-except Exception as e:
-    print(f"Ошибка при запросе к Groq: {e}")
-
-# 2. Скачивание тестового видео
+# 2. Скачивание тестового видео и субтитров через yt-dlp
 TEST_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
 input_video = "test_video.mp4"
 output_clip = "vertical_clip.mp4"
@@ -45,17 +25,46 @@ ydl_opts = {
     'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
     'outtmpl': input_video,
     'merge_output_format': 'mp4',
+    'writesubtitles': True,          # Скачиваем субтитры, если они есть
+    'writeautomaticsub': True,       # Или автосубтитры от YouTube
+    'subtitleslangs': ['ru', 'en'],   # Русский или английский язык
 }
 
-print("Начинаем скачивание видео через yt-dlp...")
+print("Скачиваем видео и субтитры...")
 try:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([TEST_URL])
-    print("Видео успешно скачано!")
+    print("Видео и данные успешно загружены!")
 except Exception as e:
     print(f"Ошибка при скачивании: {e}")
 
-# 3. Обрезаем видео в вертикальный формат 9:16 (1080x1920) через FFmpeg
+# 3. Отправляем запрос к Groq AI для поиска динамичных моментов
+print("Анализируем видео через Groq AI (Llama)...")
+prompt_text = (
+    "Ты профессиональный видеомонтажер рилсов и шортсов. "
+    "Предложи таймкоды (начало и конец) для самого динамичного и цепляющего момента "
+    "продолжительностью до 30 секунд. Выдай ответ в формате: Старт: [сек], Конец: [сек]."
+)
+
+payload = {
+    "model": "llama-3.3-70b-versatile",
+    "messages": [
+        {"role": "system", "content": "Ты эксперт по вирусному контенту."},
+        {"role": "user", "content": prompt_text}
+    ]
+}
+
+try:
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+    if response.status_code == 200:
+        ai_answer = response.json()["choices"][0]["message"]["content"]
+        print(f"ИИ определил лучшие моменты:\n{ai_answer}")
+    else:
+        print(f"Ошибка ответа Groq API: {response.text}")
+except Exception as e:
+    print(f"Ошибка при запросе к Groq: {e}")
+
+# 4. Обрезаем видео в вертикальный формат 9:16 (1080x1920) через FFmpeg
 print("Запускаем конвертацию в формат 9:16...")
 try:
     ffmpeg_cmd = [
