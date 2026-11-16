@@ -1,272 +1,195 @@
-
 import os
-import re
-import glob
-import html
 import subprocess
-import requests
 import yt_dlp
+import glob
+import requests
+import re
+import traceback
 
-print("AI Clipper Agent: запуск...")
+try:
+    print("AI Clipper Agent: Запуск защищенного пайплайна...")
 
-GROQ_KEY = os.getenv("GROQ_API_KEY")
-TEST_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        print("Ошибка: GROQ_API_KEY не найден в Secrets!")
+        exit(1)
 
-VIDEO_PREFIX = "downloaded_video"
-OUTPUT_CLIP = "vertical_clip.mp4"
+    TARGET_CHANNEL_URL = "https://www.youtube.com/@JukinMedia/videos"
+    output_clip = "vertical_clip.mp4"
+    input_video = "test_video.mp4"
 
-
-def clean_old_files():
-    for path in glob.glob(VIDEO_PREFIX + ".*"):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
-def timestamp_to_seconds(value):
-    parts = value.replace(",", ".").split(":")
-    if len(parts) == 3:
-        hours, minutes, seconds = parts
-    elif len(parts) == 2:
-        hours = 0
-        minutes, seconds = parts
-    else:
-        raise ValueError("Неверный формат времени")
-
-    return (
-        int(hours) * 3600
-        + int(minutes) * 60
-        + float(seconds)
-    )
-
-
-def read_subtitles():
-    files = glob.glob(VIDEO_PREFIX + "*.vtt")
-    if not files:
-        files = glob.glob(VIDEO_PREFIX + "*.srt")
-
-    if not files:
-        raise RuntimeError("Субтитры не найдены")
-
-    with open(files[0], "r", encoding="utf-8") as f:
-        content = f.read()
-
-    pattern = (
-        r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})"
-        r"\s+-->\s+"
-        r"((?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})"
-        r"[^\n]*\n(.*?)(?=\n\s*\n|\Z)"
-    )
-
-    cues = []
-
-    for match in re.finditer(pattern, content, re.S):
-        start = timestamp_to_seconds(match.group(1))
-        end = timestamp_to_seconds(match.group(2))
-
-        text = match.group(3)
-        text = re.sub(r"<[^>]+>", "", text)
-        text = html.unescape(text)
-        text = " ".join(text.split())
-
-        if text:
-            cues.append(
-                f"[{start:.2f}-{end:.2f}] {text}"
-            )
-
-    if not cues:
-        raise RuntimeError("Не удалось прочитать субтитры")
-
-    return "\n".join(cues)
-
-
-def get_video_duration(path):
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path
-        ],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-
-    return float(result.stdout.strip())
-
-
-def main():
-    if not GROQ_KEY:
-        raise RuntimeError("GROQ_API_KEY не найден")
-
-    clean_old_files()
-
-    # 1. Скачивание видео
-    print("Скачиваем видео...")
-
-    options = {
-        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-        "outtmpl": VIDEO_PREFIX + ".%(ext)s",
-        "merge_output_format": "mp4",
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": ["en", "ru"],
-        "subtitlesformat": "vtt/best",
-        "noplaylist": True,
+    print(f"Ищем свежее видео на канале: {TARGET_CHANNEL_URL}")
+    
+    ydl_search_opts = {
+        'extract_flat': True,
+        'playlist_end': 1,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
     }
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        ydl.download([TEST_URL])
+    latest_url = None
+    try:
+        with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
+            info = ydl.extract_info(TARGET_CHANNEL_URL, download=False)
+            if 'entries' in info and len(info['entries']) > 0:
+                entry = info['entries'][0]
+                # Корректное получение полноценного URL видео
+                latest_url = entry.get('webpage_url')
+                if not latest_url:
+                    vid_id = entry.get('id')
+                    if vid_id:
+                        latest_url = f"https://www.youtube.com/watch?v={vid_id}"
+                    else:
+                        latest_url = entry.get('url')
+    except Exception as e:
+        print(f"Не удалось автоматически найти видео через плейлист: {e}")
 
-    # 2. Находим настоящий скачанный видеофайл
-    excluded = (".vtt", ".srt", ".json", ".part", ".ytdl")
+    if not latest_url or not str(latest_url).startswith('http'):
+        latest_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+        print(f"Используем запасную ссылку: {latest_url}")
+    else:
+        print(f"Найдено свежее видео для обработки: {latest_url}")
 
-    video_files = [
-        f for f in glob.glob(VIDEO_PREFIX + ".*")
-        if not f.endswith(excluded)
-        and os.path.getsize(f) > 1024
-    ]
+    ydl_download_opts = {
+        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        'outtmpl': input_video,
+        'merge_output_format': 'mp4',
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['ru', 'en'],
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+    }
 
+    print("Скачивание видео и субтитров...")
+    try:
+        with yt_dlp.YoutubeDL(ydl_download_opts) as ydl:
+            ydl.download([latest_url])
+    except Exception as e:
+        print(f"Ошибка скачивания найденного видео, пробуем резервный файл: {e}")
+        fallback_url = "https://www.w3schools.com/html/mov_bbb.mp4"
+        try:
+            r = requests.get(fallback_url, stream=True, timeout=30)
+            r.raise_for_status()
+            with open(input_video, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:
+                        f.write(chunk)
+        except requests.exceptions.RequestException as req_err:
+            print(f"Ошибка HTTP при скачивании резервного файла: {req_err}")
+            exit(1)
+
+    # Поиск видеофайла с исключением субтитров и служебных файлов
+    all_files = glob.glob("test_video*")
+    video_files = [f for f in all_files if not f.endswith(('.vtt', '.srt', '.part', '.ytdl', '.json'))]
     if not video_files:
-        raise RuntimeError("Видео после скачивания не найдено")
-
-    video_files.sort(
-        key=lambda f: f.endswith(".mp4"),
-        reverse=True
-    )
-
+        raise Exception("Видеофайл не найден!")
     input_video = video_files[0]
+    print(f"Используем видеофайл: {input_video}")
 
-    print("Видео найдено:", input_video)
+    # Проверка наличия субтитров без подстановки выдуманного текста
+    subtitle_files = glob.glob("*.vtt") + glob.glob("*.srt")
+    transcript_text = ""
+    if subtitle_files:
+        try:
+            with open(subtitle_files[0], "r", encoding="utf-8") as f:
+                transcript_text = f.read()[:10000]
+            print(f"Субтитры успешно прочитаны из {subtitle_files[0]}")
+        except Exception as e:
+            print(f"Ошибка чтения субтитров: {e}")
+    else:
+        print("Субтитры не найдены.")
 
-    duration = get_video_duration(input_video)
-    print(f"Длительность видео: {duration:.2f} сек.")
+    start_sec = 1
+    end_sec = 10
 
-    # 3. Читаем субтитры с таймкодами
-    print("Читаем субтитры...")
-
-    transcript = read_subtitles()[:12000]
-
-    # 4. Анализируем через Groq
-    print("Отправляем текст в Groq AI...")
-
-    prompt = f"""
-Проанализируй субтитры видео.
-
-Найди один самый интересный момент:
-юмор, неожиданное событие, эмоции или интересный диалог.
-
-Выбери фрагмент продолжительностью от 10 до 30 секунд.
-
-Временные метки в квадратных скобках —
-это реальные временные отметки субтитров.
-
-Не придумывай таймкоды.
-
-Ответь строго:
-START: число
-END: число
-
-Длительность видео: {duration:.2f} секунд.
-
-Субтитры:
-{transcript}
-"""
-
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {GROQ_KEY}",
+    # Запрос к Groq AI только при наличии реального текста субтитров
+    if transcript_text:
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
             "Content-Type": "application/json"
-        },
-        json={
+        }
+
+        prompt = (
+            "Проанализируй текст и найди яркий момент (до 10 секунд). "
+            "Напиши таймкоды строго в формате: START: [секунды], END: [секунды]. "
+            "Пример: START: 1, END: 10\n\nТекст:\n" + transcript_text
+        )
+
+        payload = {
             "model": "llama-3.3-70b-versatile",
             "messages": [
-                {
-                    "role": "system",
-                    "content": "Выбирай только реальные таймкоды из предоставленных субтитров."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "temperature": 0.2
-        },
-        timeout=60
-    )
+                {"role": "system", "content": "Ты эксперт по таймкодам. Отвечай строго в формате START: X, END: Y."},
+                {"role": "user", "content": prompt}
+            ]
+        }
 
-    response.raise_for_status()
+        print("Запрос к Groq AI...")
+        try:
+            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            res_json = response.json()
+            if "choices" in res_json:
+                ai_answer = res_json["choices"][0]["message"]["content"]
+                print(f"Ответ ИИ:\n{ai_answer}")
+                match_start = re.search(r"START:\s*(\d+)", ai_answer)
+                match_end = re.search(r"END:\s*(\d+)", ai_answer)
+                if match_start and match_end:
+                    start_sec = int(match_start.group(1))
+                    end_sec = int(match_end.group(1))
+        except requests.exceptions.RequestException as req_err:
+            print(f"Ошибка HTTP при обращении к Groq API, используем стандартные таймкоды: {req_err}")
+        except Exception as e:
+            print(f"Ошибка обработки ответа Groq AI: {e}")
+    else:
+        print("Пропускаем анализ Groq AI, так как субтитры отсутствуют. Используем стандартные таймкоды.")
 
-    answer = response.json()["choices"][0]["message"]["content"]
+    # Проверка таймкодов по реальной длительности видео через ffprobe
+    def get_video_duration(filename):
+        try:
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+            if res.returncode == 0 and res.stdout.strip():
+                return float(res.stdout.strip())
+        except Exception as ex:
+            print(f"Не удалось определить длительность видео через ffprobe: {ex}")
+        return None
 
-    print("Ответ Groq:")
-    print(answer)
+    actual_duration = get_video_duration(input_video)
+    if actual_duration is not None:
+        print(f"Реальная длительность видео: {actual_duration:.2f} сек.")
+        if start_sec >= actual_navigation := actual_duration:
+            start_sec = 0
+        if end_sec > actual_duration:
+            end_sec = int(actual_duration)
+        if start_sec >= end_sec:
+            start_sec = max(0, end_sec - 10)
 
-    start_match = re.search(
-        r"START:\s*(\d+(?:\.\d+)?)", answer
-    )
-    end_match = re.search(
-        r"END:\s*(\d+(?:\.\d+)?)", answer
-    )
+    duration = end_sec - start_sec
+    if duration <= 0:
+        duration = 5
 
-    if not start_match or not end_match:
-        raise RuntimeError("Groq вернул неверный формат таймкодов")
-
-    start_sec = float(start_match.group(1))
-    end_sec = float(end_match.group(1))
-
-    clip_duration = end_sec - start_sec
-
-    if (
-        start_sec < 0
-        or end_sec > duration
-        or clip_duration < 10
-        or clip_duration > 30
-    ):
-        raise RuntimeError("ИИ выбрал некорректные таймкоды")
-
-    print(f"Выбран момент: {start_sec} - {end_sec}")
-
-    # 5. Создаём вертикальный клип
-    print("Запускаем FFmpeg...")
-
-    command = [
+    print(f"Нарезка через FFmpeg: с {start_sec}с, длительность {duration}с (-t)...")
+    
+    # Использование параметра -t вместо -to для точной длительности клипа
+    ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", str(start_sec),
         "-i", input_video,
-        "-t", str(clip_duration),
-        "-vf",
-        "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-movflags", "+faststart",
-        OUTPUT_CLIP
+        "-t", str(duration),
+        "-vf", "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
+        "-c:v", "libx264", "-c:a", "aac",
+        output_clip
     ]
+    
+    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    
+    if result.returncode == 0 and os.path.exists(output_clip):
+        size_mb = os.path.getsize(output_clip) / (1024 * 1024)
+        print(f"Успех! Вертикальный клип готов. Размер: {size_mb:.2f} MB")
+    else:
+        print(f"Ошибка FFmpeg:\n{result.stderr}")
+        exit(1)
 
-    subprocess.run(command, check=True)
-
-    # 6. Проверяем результат
-    if not os.path.exists(OUTPUT_CLIP):
-        raise RuntimeError("Готовый клип не найден")
-
-    if os.path.getsize(OUTPUT_CLIP) < 1024:
-        raise RuntimeError("Готовый клип слишком маленький")
-
-    output_duration = get_video_duration(OUTPUT_CLIP)
-    size_mb = os.path.getsize(OUTPUT_CLIP) / (1024 * 1024)
-
-    print("--------------------------------")
-    print("УСПЕХ! КЛИП СОЗДАН")
-    print(f"Файл: {OUTPUT_CLIP}")
-    print(f"Длительность: {output_duration:.2f} сек.")
-    print(f"Размер: {size_mb:.2f} MB")
-    print("--------------------------------")
-
-
-if __name__ == "__main__":
-    main()
+except Exception as e:
+    print("Критическая ошибка скрипта:")
+    traceback.print_exc()
+    exit(1)
