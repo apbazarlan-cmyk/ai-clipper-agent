@@ -66,14 +66,13 @@ payload = {
 print("Анализ текста через Groq AI...")
 response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
 
-start_sec = 10  г# Дефолтные значения на случай сбоя
+start_sec = 10
 end_sec = 35
 
 if response.status_code == 200:
     ai_answer = response.json()["choices"][0]["message"]["content"]
     print(f"Ответ ИИ:\n{ai_answer}")
     
-    # Ищем цифры после START и END
     match_start = re.search(r"START:\s*(\d+)", ai_answer)
     match_end = re.search(r"END:\s*(\d+)", ai_answer)
     
@@ -85,7 +84,7 @@ else:
     print(f"Ошибка Groq API: {response.text}")
 
 # 4. Нарезка точного фрагмента в 9:16 через FFmpeg
-print(f"Вырезаем фрагмент с {start_sec} по {end_sec секунду} и конвертируем в 9:16...")
+print(f"Вырезаем фрагмент с {start_sec} по {end_sec} секунду и конвертируем в 9:16...")
 try:
     duration = end_sec - start_sec
     if duration <= 0:
