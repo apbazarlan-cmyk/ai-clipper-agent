@@ -1,22 +1,18 @@
 import os
 import subprocess
 import yt_dlp
+import glob
 import requests
+import re
 
-print("AI Clipper Agent запущен и готов к работе!")
+print("AI Clipper Agent: Запуск умной нарезки...")
 
-# 1. Проверяем ключ Groq API
 groq_key = os.environ.get("GROQ_API_KEY")
 if not groq_key:
     print("Ошибка: Groq API ключ не найден в Secrets!")
     exit(1)
 
-headers = {
-    "Authorization": f"Bearer {groq_key}",
-    "Content-Type": "application/json"
-}
-
-# 2. Скачивание тестового видео и субтитров через yt-dlp
+# 1. Скачиваем видео и субтитры
 TEST_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
 input_video = "test_video.mp4"
 output_clip = "vertical_clip.mp4"
@@ -25,63 +21,93 @@ ydl_opts = {
     'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
     'outtmpl': input_video,
     'merge_output_format': 'mp4',
-    'writesubtitles': True,          # Скачиваем субтитры, если они есть
-    'writeautomaticsub': True,       # Или автосубтитры от YouTube
-    'subtitleslangs': ['ru', 'en'],   # Русский или английский язык
+    'writesubtitles': True,
+    'writeautomaticsub': True,
+    'subtitleslangs': ['ru', 'en'],
 }
 
-print("Скачиваем видео и субтитры...")
-try:
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([TEST_URL])
-    print("Видео и данные успешно загружены!")
-except Exception as e:
-    print(f"Ошибка при скачивании: {e}")
+print("Скачивание видео и субтитров...")
+with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    ydl.download([TEST_URL])
 
-# 3. Отправляем запрос к Groq AI для поиска динамичных моментов
-print("Анализируем видео через Groq AI (Llama)...")
-prompt_text = (
-    "Ты профессиональный видеомонтажер рилсов и шортсов. "
-    "Предложи таймкоды (начало и конец) для самого динамичного и цепляющего момента "
-    "продолжительностью до 30 секунд. Выдай ответ в формате: Старт: [сек], Конец: [сек]."
+# 2. Читаем субтитры
+subtitle_files = glob.glob("*.vtt") + glob.glob("*.srt")
+transcript_text = ""
+if subtitle_files:
+    try:
+        with open(subtitle_files[0], "r", encoding="utf-8") as f:
+            transcript_text = f.read()[:12000]
+    except Exception as e:
+        print(f"Ошибка чтения субтитров: {e}")
+
+if not transcript_text:
+    transcript_text = "Тестовое игровое видео стримера."
+
+# 3. Запрос к Groq AI за точными таймкодами
+headers = {
+    "Authorization": f"Bearer {groq_key}",
+    "Content-Type": "application/json"
+}
+
+prompt = (
+    "Проанализируй текст субтитров и найди самый яркий момент (до 30 секунд). "
+    "Обязательно напиши таймкоды в строгом формате: START: [секунды], END: [секунды]. "
+    "Например: START: 15, END: 45\n\nТекст:\n" + transcript_text
 )
 
 payload = {
     "model": "llama-3.3-70b-versatile",
     "messages": [
-        {"role": "system", "content": "Ты эксперт по вирусному контенту."},
-        {"role": "user", "content": prompt_text}
+        {"role": "system", "content": "Ты эксперт по таймкодам. Отвечай строго в формате START: X, END: Y."},
+        {"role": "user", "content": prompt}
     ]
 }
 
-try:
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    if response.status_code == 200:
-        ai_answer = response.json()["choices"][0]["message"]["content"]
-        print(f"ИИ определил лучшие моменты:\n{ai_answer}")
-    else:
-        print(f"Ошибка ответа Groq API: {response.text}")
-except Exception as e:
-    print(f"Ошибка при запросе к Groq: {e}")
+print("Анализ текста через Groq AI...")
+response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
 
-# 4. Обрезаем видео в вертикальный формат 9:16 (1080x1920) через FFmpeg
-print("Запускаем конвертацию в формат 9:16...")
+start_sec = 10  г# Дефолтные значения на случай сбоя
+end_sec = 35
+
+if response.status_code == 200:
+    ai_answer = response.json()["choices"][0]["message"]["content"]
+    print(f"Ответ ИИ:\n{ai_answer}")
+    
+    # Ищем цифры после START и END
+    match_start = re.search(r"START:\s*(\d+)", ai_answer)
+    match_end = re.search(r"END:\s*(\d+)", ai_answer)
+    
+    if match_start and match_end:
+        start_sec = int(match_start.group(1))
+        end_sec = int(match_end.group(1))
+        print(f"Распознанные таймкоды: с {start_sec}с по {end_sec}с")
+else:
+    print(f"Ошибка Groq API: {response.text}")
+
+# 4. Нарезка точного фрагмента в 9:16 через FFmpeg
+print(f"Вырезаем фрагмент с {start_sec} по {end_sec секунду} и конвертируем в 9:16...")
 try:
+    duration = end_sec - start_sec
+    if duration <= 0:
+        duration = 20
+
     ffmpeg_cmd = [
         "ffmpeg", "-y",
+        "-ss", str(start_sec),
         "-i", input_video,
+        "-to", str(duration),
         "-vf", "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
-        "-c:a", "copy",
+        "-c:v", "libx264", "-c:a", "aac",
         output_clip
     ]
     
     result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
     if result.returncode == 0 and os.path.exists(output_clip):
-        clip_size = os.path.getsize(output_clip) / (1024 * 1024)
-        print(f"Готово! Вертикальный клип 9:16 успешно создан. Размер: {clip_size:.2f} MB")
+        size_mb = os.path.getsize(output_clip) / (1024 * 1024)
+        print(f"Успех! Точечный вертикальный клип готов. Размер: {size_mb:.2f} MB")
     else:
         print(f"Ошибка FFmpeg: {result.stderr}")
 
 except Exception as e:
-    print(f"Ошибка при запуске FFmpeg: {e}")
+    print(f"Ошибка при нарезке: {e}")
