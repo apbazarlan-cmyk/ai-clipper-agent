@@ -32,7 +32,6 @@ try:
             info = ydl.extract_info(TARGET_CHANNEL_URL, download=False)
             if 'entries' in info and len(info['entries']) > 0:
                 entry = info['entries'][0]
-                # Корректное получение полноценного URL видео
                 latest_url = entry.get('webpage_url')
                 if not latest_url:
                     vid_id = entry.get('id')
@@ -77,7 +76,6 @@ try:
             print(f"Ошибка HTTP при скачивании резервного файла: {req_err}")
             exit(1)
 
-    # Поиск видеофайла с исключением субтитров и служебных файлов
     all_files = glob.glob("test_video*")
     video_files = [f for f in all_files if not f.endswith(('.vtt', '.srt', '.part', '.ytdl', '.json'))]
     if not video_files:
@@ -85,7 +83,6 @@ try:
     input_video = video_files[0]
     print(f"Используем видеофайл: {input_video}")
 
-    # Проверка наличия субтитров без подстановки выдуманного текста
     subtitle_files = glob.glob("*.vtt") + glob.glob("*.srt")
     transcript_text = ""
     if subtitle_files:
@@ -101,7 +98,6 @@ try:
     start_sec = 1
     end_sec = 10
 
-    # Запрос к Groq AI только при наличии реального текста субтитров
     if transcript_text:
         headers = {
             "Authorization": f"Bearer {groq_key}",
@@ -142,7 +138,6 @@ try:
     else:
         print("Пропускаем анализ Groq AI, так как субтитры отсутствуют. Используем стандартные таймкоды.")
 
-    # Проверка таймкодов по реальной длительности видео через ffprobe
     def get_video_duration(filename):
         try:
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename]
@@ -156,7 +151,7 @@ try:
     actual_duration = get_video_duration(input_video)
     if actual_duration is not None:
         print(f"Реальная длительность видео: {actual_duration:.2f} сек.")
-        if start_sec >= actual_navigation := actual_duration:
+        if start_sec >= actual_duration:
             start_sec = 0
         if end_sec > actual_duration:
             end_sec = int(actual_duration)
@@ -169,7 +164,6 @@ try:
 
     print(f"Нарезка через FFmpeg: с {start_sec}с, длительность {duration}с (-t)...")
     
-    # Использование параметра -t вместо -to для точной длительности клипа
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-ss", str(start_sec),
