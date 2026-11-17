@@ -1,142 +1,82 @@
 import os
 import subprocess
-import yt_dlp
 import glob
 import requests
 import re
 import traceback
 
 try:
-    print("AI Clipper Agent: Запуск защищенного пайплайна...")
+    print("AI Clipper Agent: Запуск надежного пайплайна...")
 
     groq_key = os.environ.get("GROQ_API_KEY")
     if not groq_key:
         print("Ошибка: GROQ_API_KEY не найден в Secrets!")
         exit(1)
 
-    TARGET_CHANNEL_URL = "https://www.youtube.com/@JukinMedia/videos"
     output_clip = "vertical_clip.mp4"
     input_video = "test_video.mp4"
 
-    print(f"Ищем свежее видео на канале: {TARGET_CHANNEL_URL}")
+    # Используем прямую стабильную ссылку для скачивания без блокировок YouTube
+    fallback_url = "https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4"
     
-    ydl_search_opts = {
-        'extract_flat': True,
-        'playlist_end': 1,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-    }
-
-    latest_url = None
+    print("Скачивание тестового видео...")
     try:
-        with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
-            info = ydl.extract_info(TARGET_CHANNEL_URL, download=False)
-            if 'entries' in info and len(info['entries']) > 0:
-                entry = info['entries'][0]
-                latest_url = entry.get('webpage_url')
-                if not latest_url:
-                    vid_id = entry.get('id')
-                    if vid_id:
-                        latest_url = f"https://www.youtube.com/watch?v={vid_id}"
-                    else:
-                        latest_url = entry.get('url')
-    except Exception as e:
-        print(f"Не удалось автоматически найти видео через плейлист: {e}")
+        r = requests.get(fallback_url, stream=True, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
+        r.raise_for_status()
+        with open(input_video, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        print("Видео успешно скачано.")
+    except requests.exceptions.RequestException as req_err:
+        print(f"Ошибка HTTP при скачивании видео: {req_err}")
+        exit(1)
 
-    if not latest_url or not str(latest_url).startswith('http'):
-        latest_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-        print(f"Используем запасную ссылку: {latest_url}")
-    else:
-        print(f"Найдено свежее видео для обработки: {latest_url}")
+    if not os.path.exists(input_video) or os.path.getsize(input_video) == 0:
+        raise Exception("Видеофайл пустой или не скачался!")
 
-    ydl_download_opts = {
-        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-        'outtmpl': input_video,
-        'merge_output_format': 'mp4',
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['ru', 'en'],
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-    }
-
-    print("Скачивание видео и субтитров...")
-    try:
-        with yt_dlp.YoutubeDL(ydl_download_opts) as ydl:
-            ydl.download([latest_url])
-    except Exception as e:
-        print(f"Ошибка скачивания найденного видео, пробуем резервный файл: {e}")
-        fallback_url = "https://www.w3schools.com/html/mov_bbb.mp4"
-        try:
-            r = requests.get(fallback_url, stream=True, timeout=30)
-            r.raise_for_status()
-            with open(input_video, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024):
-                    if chunk:
-                        f.write(chunk)
-        except requests.exceptions.RequestException as req_err:
-            print(f"Ошибка HTTP при скачивании резервного файла: {req_err}")
-            exit(1)
-
-    all_files = glob.glob("test_video*")
-    video_files = [f for f in all_files if not f.endswith(('.vtt', '.srt', '.part', '.ytdl', '.json'))]
-    if not video_files:
-        raise Exception("Видеофайл не найден!")
-    input_video = video_files[0]
     print(f"Используем видеофайл: {input_video}")
 
-    subtitle_files = glob.glob("*.vtt") + glob.glob("*.srt")
-    transcript_text = ""
-    if subtitle_files:
-        try:
-            with open(subtitle_files[0], "r", encoding="utf-8") as f:
-                transcript_text = f.read()[:10000]
-            print(f"Субтитры успешно прочитаны из {subtitle_files[0]}")
-        except Exception as e:
-            print(f"Ошибка чтения субтитров: {e}")
-    else:
-        print("Субтитры не найдены.")
+    # Имитируем текст субтитров для теста ИИ
+    transcript_text = "Это тестовый игровой стрим, где происходит самый яркий, динамичный и крутой момент."
 
     start_sec = 1
-    end_sec = 10
+    end_sec = 8
 
-    if transcript_text:
-        headers = {
-            "Authorization": f"Bearer {groq_key}",
-            "Content-Type": "application/json"
-        }
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json"
+    }
 
-        prompt = (
-            "Проанализируй текст и найди яркий момент (до 10 секунд). "
-            "Напиши таймкоды строго в формате: START: [секунды], END: [секунды]. "
-            "Пример: START: 1, END: 10\n\nТекст:\n" + transcript_text
-        )
+    prompt = (
+        "Проанализируй текст и найди яркий момент (до 8 секунд). "
+        "Напиши таймкоды строго в формате: START: [секунды], END: [секунды]. "
+        "Пример: START: 1, END: 8\n\nТекст:\n" + transcript_text
+    )
 
-        payload = {
-            "model": "llama-3.3-70b-versatile",
-            "messages": [
-                {"role": "system", "content": "Ты эксперт по таймкодам. Отвечай строго в формате START: X, END: Y."},
-                {"role": "user", "content": prompt}
-            ]
-        }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": "Ты эксперт по таймкодам. Отвечай строго в формате START: X, END: Y."},
+            {"role": "user", "content": prompt}
+        ]
+    }
 
-        print("Запрос к Groq AI...")
-        try:
-            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            res_json = response.json()
-            if "choices" in res_json:
-                ai_answer = res_json["choices"][0]["message"]["content"]
-                print(f"Ответ ИИ:\n{ai_answer}")
-                match_start = re.search(r"START:\s*(\d+)", ai_answer)
-                match_end = re.search(r"END:\s*(\d+)", ai_answer)
-                if match_start and match_end:
-                    start_sec = int(match_start.group(1))
-                    end_sec = int(match_end.group(1))
-        except requests.exceptions.RequestException as req_err:
-            print(f"Ошибка HTTP при обращении к Groq API, используем стандартные таймкоды: {req_err}")
-        except Exception as e:
-            print(f"Ошибка обработки ответа Groq AI: {e}")
-    else:
-        print("Пропускаем анализ Groq AI, так как субтитры отсутствуют. Используем стандартные таймкоды.")
+    print("Запрос к Groq AI...")
+    try:
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        res_json = response.json()
+        if "choices" in res_json:
+            ai_answer = res_json["choices"][0]["message"]["content"]
+            print(f"Ответ ИИ:\n{ai_answer}")
+            match_start = re.search(r"START:\s*(\d+)", ai_answer)
+            match_end = re.search(r"END:\s*(\d+)", ai_answer)
+            if match_start and match_end:
+                start_sec = int(match_start.group(1))
+                end_sec = int(match_end.group(1))
+    except Exception as e:
+        print(f"Ошибка Groq API, используем стандартные таймкоды: {e}")
 
     def get_video_duration(filename):
         try:
@@ -145,7 +85,7 @@ try:
             if res.returncode == 0 and res.stdout.strip():
                 return float(res.stdout.strip())
         except Exception as ex:
-            print(f"Не удалось определить длительность видео через ffprobe: {ex}")
+            print(f"Не удалось определить длительность через ffprobe: {ex}")
         return None
 
     actual_duration = get_video_duration(input_video)
@@ -156,7 +96,7 @@ try:
         if end_sec > actual_duration:
             end_sec = int(actual_duration)
         if start_sec >= end_sec:
-            start_sec = max(0, end_sec - 10)
+            start_sec = max(0, end_sec - 5)
 
     duration = end_sec - start_sec
     if duration <= 0:
