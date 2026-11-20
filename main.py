@@ -8,12 +8,28 @@ import requests
 import yt_dlp
 
 PROCESSED_FILE = "processed_ids.json"
+COOKIES_FILE = "cookies.txt"
 GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 WHISPER_MODEL = "whisper-large-v3-turbo"
 LLM_MODEL = "llama-3.3-70b-versatile"
 MAX_GROQ_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_CLIP_DURATION_SEC = 8.0
+
+
+def setup_cookies_file() -> str | None:
+  """Создаёт cookies.txt из секрета YT_COOKIES, если он задан."""
+  raw_cookies = os.environ.get("YT_COOKIES", "").strip()
+  if not raw_cookies:
+    return None
+  try:
+    with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+      f.write(raw_cookies + ("\n" if not raw_cookies.endswith("\n") else ""))
+    print(f"Файл {COOKIES_FILE} успешно создан из секрета YT_COOKIES.")
+    return COOKIES_FILE
+  except Exception as e:
+    print(f"Не удалось записать {COOKIES_FILE}: {e}")
+    return None
 
 
 def load_processed_ids() -> set[str]:
@@ -343,6 +359,7 @@ try:
     print("Ошибка: GROQ_API_KEY не найден в Secrets!")
     exit(1)
 
+  cookies_path = setup_cookies_file()
   output_clip = "vertical_clip.mp4"
   input_video = "test_video.mp4"
 
@@ -367,13 +384,15 @@ try:
   ydl_search_opts = {
       "extract_flat": True,
       "playlist_end": 5,
+      "quiet": True,
+      "no_warnings": True,
       "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
   }
+  if cookies_path:
+    ydl_search_opts["cookiefile"] = cookies_path
 
   for ch_url in channels:
-    target = (
-        ch_url if "/videos" in ch_url or "@" in ch_url else ch_url + "/videos"
-    )
+    target = ch_url if "/videos" in ch_url else ch_url.rstrip("/") + "/videos"
     print(f"Проверяем канал: {target}")
     try:
       with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
@@ -448,6 +467,9 @@ try:
         "subtitlesformat": "vtt/srt/best",
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
+    if cookies_path:
+      ydl_download_opts["cookiefile"] = cookies_path
+
     print("Скачивание найденного видео и субтитров (en/ru)...")
     try:
       with yt_dlp.YoutubeDL(ydl_download_opts) as ydl:
